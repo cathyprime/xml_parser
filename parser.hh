@@ -32,12 +32,22 @@ struct XMLArg {
     { }
 
     XMLArg(char *m_key, char *m_value) :
-      key(strdup(m_key)),
-      value(strdup(m_value))
+      key(m_key),
+      value(m_value)
     { }
+
+    XMLArg(XMLArg &&other) :
+      key(other.key),
+      value(other.value)
+    {
+        other.key = nullptr;
+        other.value = nullptr;
+    }
 
     void operator=(XMLArg &&rhs)
     {
+        if (key) free(key);
+        if (value) free(value);
         key = rhs.key;
         value = rhs.value;
         rhs.key = nullptr;
@@ -46,8 +56,8 @@ struct XMLArg {
 
     ~XMLArg()
     {
-        if (key) delete key;
-        if (value) delete value;
+        if (key) free(key);
+        if (value) free(value);
     }
 };
 
@@ -58,11 +68,12 @@ struct XMLArglist {
 
     void resize()
     {
-        auto new_data = new XMLArg[capacity*2];
+        capacity *= 2;
+        XMLArg *new_data = new XMLArg[capacity];
         memcpy(new_data, data, capacity * sizeof(XMLNode*));
+
         delete[] data;
         data = new_data;
-        capacity *= 2;
     }
 
   public:
@@ -93,7 +104,7 @@ struct XMLArglist {
     void append(XMLArg *arg)
     {
         if (len >= capacity) resize();
-        data[len++] = (XMLArg&&) *arg;
+        data[len++] = static_cast<XMLArg&&>(*arg);
     }
 
     ~XMLArglist()
@@ -118,8 +129,8 @@ struct XMLNode {
 
     ~XMLNode()
     {
-        if (tag) delete[] tag;
-        if (inner_text) delete[] inner_text;
+        if (tag) free(tag);
+        if (inner_text) free(inner_text);
     }
 
     XMLNode *spawn_child()
@@ -223,8 +234,9 @@ namespace {
     };
 
     class XMLParser {
-      private:
+      public:
         char *buf;
+      private:
         size_t len;
         XMLDocument *doc;
         char lex[256];
@@ -279,7 +291,7 @@ namespace {
                     } else {
                         size_t in_len = strlen(current_node->inner_text);
                         size_t t_len = strlen(text);
-                        current_node->inner_text = (char*)realloc(current_node->inner_text, in_len + t_len + 1);
+                        current_node->inner_text = (char*)realloc(current_node->inner_text, in_len + t_len + 2);
                         current_node->inner_text[in_len] = '\n';
                         current_node->inner_text[in_len + 1] = '\0';
                         strcat(current_node->inner_text, text);
@@ -349,8 +361,8 @@ namespace {
         }
 
       public:
-        XMLParser(XMLDocument *doc, char *buf, size_t sz) :
-          buf(buf), len(sz),
+        XMLParser(XMLDocument *doc, size_t sz) :
+          buf(new char[sz]), len(sz),
           doc(doc), lex(),
           lexi(0), i(0), current_node(nullptr)
         {
@@ -359,7 +371,7 @@ namespace {
 
         bool parse()
         {
-            while (buf[i] != '\0') {
+            while (i < len && buf[i] != '\0') {
                 switch (buf[i]) {
                     case '<': {
                         if (buf[i+1] == '/') {
@@ -399,13 +411,12 @@ inline bool load_file(XMLDocument *doc, const char *path)
 
     fseek(f, 0, SEEK_END);
     size_t size = ftell(f);
-    char *buf = new char[size];
     fseek(f, 0, SEEK_SET);
 
-    fread(buf, 1, size, f);
+    XMLParser parser = {doc, size};
+    fread(parser.buf, 1, size, f);
     fclose(f);
 
-    XMLParser parser = {doc, buf, size};
 
     return parser.parse();
 }
