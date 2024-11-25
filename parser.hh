@@ -1,5 +1,6 @@
 #include <stdlib.h>
-#include <stddef.h>
+#include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -13,7 +14,7 @@ class XMLNodelist {
     void resize();
 
   public:
-    XMLNode *operator[](size_t) const;
+    XMLNode *operator[](size_t idx);
     XMLNodelist();
     size_t size() const;
     void print(int x);
@@ -21,11 +22,92 @@ class XMLNodelist {
     ~XMLNodelist();
 };
 
+struct XMLArg {
+    char *key;
+    char *value;
+
+    XMLArg() :
+      key(nullptr),
+      value(nullptr)
+    { }
+
+    XMLArg(char *m_key, char *m_value) :
+      key(strdup(m_key)),
+      value(strdup(m_value))
+    { }
+
+    void operator=(XMLArg &&rhs)
+    {
+        key = rhs.key;
+        value = rhs.value;
+        rhs.key = nullptr;
+        rhs.value = nullptr;
+    }
+
+    ~XMLArg()
+    {
+        if (key) delete key;
+        if (value) delete value;
+    }
+};
+
+struct XMLArglist {
+    size_t capacity;
+    size_t len;
+    XMLArg *data;
+
+    void resize()
+    {
+        auto new_data = new XMLArg[capacity*2];
+        memcpy(new_data, data, capacity * sizeof(XMLNode*));
+        delete[] data;
+        data = new_data;
+        capacity *= 2;
+    }
+
+  public:
+    XMLArg *operator[](size_t idx)
+    {
+        return &data[idx];
+    }
+
+    XMLArglist() :
+      capacity(1),
+      len(0)
+    {
+        data = new XMLArg[capacity];
+    }
+
+    size_t size() const
+    {
+        return len;
+    }
+
+    void print(int padding)
+    {
+        for (size_t i = 0; i < len; ++i) {
+            printf("%*sarg: { key = %s, value = %s }\n", padding, "", data[i].key, data[i].value);
+        }
+    }
+
+    void append(XMLArg *arg)
+    {
+        if (len >= capacity) resize();
+        data[len++] = (XMLArg&&) *arg;
+    }
+
+    ~XMLArglist()
+    {
+        if (data) delete[] data;
+    }
+};
+
 struct XMLNode {
     char *tag;
     char *inner_text;
     XMLNode *parent;
     XMLNodelist children;
+    XMLArglist arguments;
 
     XMLNode(XMLNode *parent) :
       tag(nullptr),
@@ -51,15 +133,15 @@ struct XMLNode {
     void print(int padding = 0)
     {
         printf("%*s%s: %s\n", padding, "", tag, inner_text);
-        children.print(padding == 0 ? 2 : padding * 2);
+        arguments.print(padding + 2);
+        children.print(padding == 0 ? 2 : padding + 2);
     }
 };
 
 inline void XMLNodelist::print(int padding)
 {
-    for (size_t i = 0; i < len; ++i) {
+    for (size_t i = 0; i < len; ++i)
         data[i]->print(padding);
-    }
 }
 
 inline void XMLNodelist::resize()
@@ -91,7 +173,7 @@ inline XMLNodelist::~XMLNodelist()
     if (data) delete[] data;
 }
 
-inline XMLNode *XMLNodelist::operator[](size_t idx) const
+inline XMLNode *XMLNodelist::operator[](size_t idx)
 {
     return data[idx];
 }
@@ -106,13 +188,9 @@ struct XMLDocument {
 
     ~XMLDocument()
     {
-        delete root;
+        if (root) delete root;
     }
 };
-
-#define read_until(ch) while (buf[i] != ch) lex[lexi++] = buf[i++]
-#define if_not(expr) if (!(expr)) return false
-#define skip() { i++; return; }
 
 namespace {
 
@@ -155,6 +233,36 @@ namespace {
         XMLNode *current_node;
         State state = State::Normal;
 
+        bool parse_args(uint8_t spaces)
+        {
+            if (lexi >= 256) return false;
+
+            size_t start = lexi;
+            size_t eq_pos;
+
+            while (spaces > 0) {
+                size_t end = start;
+
+                while (!isspace(lex[start])) {
+                    if (lex[start] == '=') eq_pos = start;
+                    start--;
+                }
+                lex[start] = '\0';
+                lex[eq_pos] = '\0';
+                lex[end + 1] = '\0';
+                start++;
+                XMLArg arg = {
+                    strdup(trim_whitespace(&lex[start])),
+                    strdup(trim_whitespace(&lex[eq_pos + 1]))
+                };
+                current_node->arguments.append(&arg);
+                lexi = start - 1;
+                spaces--;
+            }
+
+            return true;
+        }
+
         bool parse_tag()
         {
             if (lex[0] != '\0' && lexi != 0) {
@@ -180,7 +288,12 @@ namespace {
                 lexi = 0;
             }
 
-            read_until('>');
+            uint8_t spaces = 0;
+            while (buf[i] != '>') {
+                if (isspace(buf[i])) spaces++;
+                lex[lexi++] = buf[i++];
+            }
+
             lex[lexi] = '\0';
 
             if (state == State::Tag) {
@@ -189,6 +302,8 @@ namespace {
                 else
                     current_node = current_node->spawn_child();
 
+                if (spaces != 0) parse_args(spaces);
+
                 if (!current_node->tag)
                     current_node->tag = dupstr(lex);
                 lexi = 0;
@@ -196,6 +311,11 @@ namespace {
             }
 
             if (state == State::EndTag) {
+                if (spaces != 0) {
+                    fprintf(stderr, "closing tags shouldn't have arguments\n");
+                    return false;
+                }
+
                 if (!current_node) {
                     fprintf(stderr, "shouldn't start with closing tag\n");
                     return false;
@@ -221,7 +341,10 @@ namespace {
 
         void parse_normal()
         {
-            if (buf[i] == '<' || buf[i] == '>') skip()
+            if (buf[i] == '<' || buf[i] == '>') {
+                i++;
+                return;
+            }
             lex[lexi++] = buf[i++];
         }
 
@@ -246,7 +369,8 @@ namespace {
                             state = State::Tag;
                         }
                         i++;
-                        if_not(parse_tag());
+                        if (!(parse_tag()))
+                            return false;
                     } break;
                     case '>':
                         state = State::Normal;

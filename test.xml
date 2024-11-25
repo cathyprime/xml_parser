@@ -1,6 +1,6 @@
 <meow>
     <other>
-        <first>
+        <first hello=kekw>
             first node content
         </first>
         <second>
@@ -11,6 +11,7 @@
             <pog>
                 poggers?
             </pog>
+            meow
         </third>
         <fourth>
             fourth node content
